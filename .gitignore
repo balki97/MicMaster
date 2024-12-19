@@ -1,0 +1,7 @@
+app.log
+\.venv
+\build
+\dist
+app.spec
+settings.json
+MicMaster.spec

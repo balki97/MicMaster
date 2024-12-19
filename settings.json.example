@@ -1,0 +1,11 @@
+{
+    "volume": 100,
+    "startup": false,
+    "notifications": false,
+    "sound_notifications": true,
+    "theme": "Dark",
+    "enable_auto_mute": false,
+    "auto_mute_apps": [],
+    "tray_enabled": false,
+    "create_desktop_shortcut": false
+}
