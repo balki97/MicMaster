@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QListWidget, QListWidgetItem, QDialogButtonBox, QAbstractItemView
 )
 from PyQt5.QtCore import Qt, QEvent, QTimer, pyqtSignal
-from PyQt5.QtGui import QIcon, QDesktopServices, QPixmap, QPainter, QColor
+from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor
 from plyer import notification
 import keyboard
 import sys
@@ -21,18 +21,32 @@ import requests
 from PyQt5.QtCore import QUrl
 
 # Define the current version
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 SETTINGS_FILE = 'settings.json'
 LOG_FILE = 'app.log'
 
-# Setup logging
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format='%(asctime)s:%(levelname)s:%(message)s'
-)
-
+def setup_logging(enable_logging):
+    """Configure logging based on user preference."""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # Remove all existing handlers
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    
+    if enable_logging:
+        try:
+            handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+            formatter = logging.Formatter('%(asctime)s:%(levelname)s:%(message)s')
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+            logging.info("Logging has been enabled.")
+        except Exception as e:
+            QMessageBox.critical(None, "Logging Error", f"Failed to enable logging: {e}")
+    else:
+        # Logging is disabled; no handlers will be added
+        pass
 
 class ApplicationSelectionDialog(QDialog):
     def __init__(self, parent=None):
@@ -132,6 +146,10 @@ class SettingsWindow(QDialog):
         self.desktop_shortcut_checkbox = QCheckBox("Create Desktop Shortcut")
         layout.addWidget(self.desktop_shortcut_checkbox)
 
+        # **Enable Logging Option**
+        self.enable_logging_checkbox = QCheckBox("Enable Logging")
+        layout.addWidget(self.enable_logging_checkbox)
+
         # Save and Reset buttons
         buttons_layout = QHBoxLayout()
         self.save_btn = QPushButton("Save")
@@ -188,7 +206,7 @@ class SettingsWindow(QDialog):
 
                 self.volume_spinbox.setValue(settings.get('volume', 100))
                 self.startup_checkbox.setChecked(settings.get('startup', False))
-                self.notifications_checkbox.setChecked(settings.get('notifications', False))  # Changed default to False
+                self.notifications_checkbox.setChecked(settings.get('notifications', False))
                 self.sound_notification_checkbox.setChecked(settings.get('sound_notifications', False))
                 self.theme_combo.setCurrentText(settings.get('theme', 'Dark'))
 
@@ -199,6 +217,8 @@ class SettingsWindow(QDialog):
                 self.tray_checkbox.setChecked(settings.get('tray_enabled', False))
 
                 self.desktop_shortcut_checkbox.setChecked(settings.get('create_desktop_shortcut', False))
+
+                self.enable_logging_checkbox.setChecked(settings.get('enable_logging', True))  # Default True
             except Exception as e:
                 logging.error(f"Error loading settings: {e}")
                 QMessageBox.critical(self, "Error", "Failed to load settings.")
@@ -221,6 +241,8 @@ class SettingsWindow(QDialog):
         tray_enabled = self.tray_checkbox.isChecked()
         create_desktop_shortcut = self.desktop_shortcut_checkbox.isChecked()
 
+        enable_logging = self.enable_logging_checkbox.isChecked()
+
         # Save settings to JSON
         settings = {
             'volume': default_volume,
@@ -231,7 +253,8 @@ class SettingsWindow(QDialog):
             'enable_auto_mute': enable_auto_mute,
             'auto_mute_apps': auto_mute_apps,
             'tray_enabled': tray_enabled,
-            'create_desktop_shortcut': create_desktop_shortcut
+            'create_desktop_shortcut': create_desktop_shortcut,
+            'enable_logging': enable_logging
         }
 
         try:
@@ -254,12 +277,15 @@ class SettingsWindow(QDialog):
         else:
             self.remove_from_startup()
 
+        # **Apply Logging Settings**
+        self.parent_widget.setup_logging(enable_logging)
+
         self.accept()
 
     def reset_settings(self):
         self.volume_spinbox.setValue(100)
         self.startup_checkbox.setChecked(False)
-        self.notifications_checkbox.setChecked(False)  # Changed default to False
+        self.notifications_checkbox.setChecked(False)
         self.sound_notification_checkbox.setChecked(False)
         self.theme_combo.setCurrentText("Dark")
 
@@ -272,6 +298,8 @@ class SettingsWindow(QDialog):
 
         self.tray_checkbox.setChecked(False)
         self.desktop_shortcut_checkbox.setChecked(False)
+
+        self.enable_logging_checkbox.setChecked(True)
 
     def add_to_startup(self):
         try:
@@ -410,6 +438,9 @@ class MicMaster(QWidget):
         # Load the theme and other settings from the settings file
         self.load_settings()
 
+        # **Setup Logging Based on Settings**
+        self.setup_logging(self.enable_logging)
+
         self.initUI()
         self.init_device()
         self.init_tray_icon()
@@ -420,6 +451,10 @@ class MicMaster(QWidget):
 
         # Check for updates on launch
         self.check_for_updates()
+
+    def setup_logging(self, enable_logging):
+        """Wrapper to configure logging."""
+        setup_logging(enable_logging)
 
     def resource_path(self, relative_path):
         """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -547,6 +582,7 @@ class MicMaster(QWidget):
                     self.tray_enabled = settings.get('tray_enabled', False)
                     self.auto_mute_apps = settings.get('auto_mute_apps', [])
                     self.create_desktop_shortcut = settings.get('create_desktop_shortcut', False)
+                    self.enable_logging = settings.get('enable_logging', True)
             except Exception as e:
                 logging.error(f"Error loading settings: {e}")
         else:
@@ -555,6 +591,7 @@ class MicMaster(QWidget):
             self.tray_enabled = False
             self.auto_mute_apps = []
             self.create_desktop_shortcut = False
+            self.enable_logging = True
 
         # Do NOT automatically create or remove desktop shortcuts on startup
         # Let the user handle it through the Settings UI
@@ -887,8 +924,13 @@ class MicMaster(QWidget):
 
             response.raise_for_status()
             latest_release = response.json()
+            assets = latest_release.get('assets', [])
+            if assets:
+                download_url = assets[0].get('browser_download_url', '')
+            else:
+                download_url = ''
+
             latest_version = latest_release.get('tag_name', '').lstrip('v')
-            download_url = latest_release.get('html_url', '')
 
             if not latest_version:
                 logging.warning("Latest version not found in the GitHub response.")
@@ -905,8 +947,8 @@ class MicMaster(QWidget):
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.Yes
                 )
-                if reply == QMessageBox.Yes:
-                    QDesktopServices.openUrl(QUrl(download_url))
+                if reply == QMessageBox.Yes and download_url:
+                    self.download_update(download_url)
                 self.update_status_label.setText("Update available.")
             else:
                 self.update_status_label.setText("You are using the latest version.")
@@ -922,6 +964,36 @@ class MicMaster(QWidget):
         finally:
             self.check_updates_btn.setEnabled(True)
 
+    def download_update(self, url):
+        """Download the latest update executable."""
+        try:
+            self.update_status_label.setText("Downloading update...")
+            self.update_status_label.repaint()
+            response = requests.get(url, stream=True)
+            total_length = response.headers.get('content-length')
+
+            if total_length is None:  # no content length header
+                with open("MicMaster_new.exe", 'wb') as f:
+                    f.write(response.content)
+            else:
+                dl = 0
+                total_length = int(total_length)
+                with open("MicMaster_new.exe", 'wb') as f:
+                    for data in response.iter_content(chunk_size=4096):
+                        dl += len(data)
+                        f.write(data)
+                        done = int(50 * dl / total_length)
+                        # Optionally, update a progress bar here
+
+            QMessageBox.information(
+                self,
+                "Download Complete",
+                "Update downloaded successfully. Please close the application and run the new executable."
+            )
+        except Exception as e:
+            logging.error(f"Error downloading update: {e}")
+            QMessageBox.critical(self, "Download Failed", "Failed to download the update.")
+
     def is_newer_version(self, latest, current):
         """Compare two version strings."""
         def version_tuple(v):
@@ -931,7 +1003,6 @@ class MicMaster(QWidget):
         except ValueError:
             logging.error(f"Invalid version format. Latest: {latest}, Current: {current}")
             return False
-
 
     def create_desktop_shortcut_method(self):
         """Create a desktop shortcut for the application."""
@@ -989,7 +1060,6 @@ class MicMaster(QWidget):
             QMessageBox.critical(self, "Error", "Failed to remove desktop shortcut.")
             return
 
-
 def main():
     pythoncom.CoInitialize()
     app = QApplication(sys.argv)
@@ -997,12 +1067,16 @@ def main():
     # Ensure the icons directory exists
     icons_dir = os.path.join(os.path.dirname(__file__), "icons")
     if not os.path.exists(icons_dir):
+        # Initialize logging here if possible, but since logging may be disabled,
+        # we temporarily enable logging to capture this critical error.
+        setup_logging(True)
         logging.error("Icons directory not found.")
         QMessageBox.critical(None, "Error", "Icons directory not found.")
         sys.exit(1)
 
     icon_path = os.path.join(os.path.dirname(__file__), "icons", "mic_switch_icon.ico")
     if not os.path.exists(icon_path):
+        setup_logging(True)
         logging.error("Application icon not found.")
         QMessageBox.critical(None, "Error", "Application icon not found.")
         sys.exit(1)
