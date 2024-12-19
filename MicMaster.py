@@ -19,9 +19,12 @@ import json
 import winsound
 import requests
 from PyQt5.QtCore import QUrl
+import shutil
+import subprocess
+import time
 
 # Define the current version
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 SETTINGS_FILE = 'settings.json'
 LOG_FILE = 'app.log'
@@ -47,6 +50,44 @@ def setup_logging(enable_logging):
     else:
         # Logging is disabled; no handlers will be added
         pass
+
+def is_process_running(exe_name):
+    """Check if a process with the given executable name is running."""
+    for proc in psutil.process_iter(['name']):
+        if proc.info['name'] == exe_name:
+            return True
+    return False
+
+def perform_update(new_exe_path, current_exe_path):
+    """Replace the current executable with the new one and restart the application."""
+    setup_logging(True)  # Ensure logging is enabled for the updater
+    logging.info("Updater started.")
+    logging.info(f"New executable path: {new_exe_path}")
+    logging.info(f"Current executable path: {current_exe_path}")
+    
+    try:
+        # Wait for the main application to close
+        logging.info("Waiting for the main application to exit...")
+        for _ in range(30):
+            if not is_process_running(os.path.basename(current_exe_path)):
+                break
+            time.sleep(1)
+        else:
+            logging.error("Main application did not exit within the expected time.")
+            QMessageBox.critical(None, "Update Error", "Failed to update the application because it is still running.")
+            sys.exit(1)
+        
+        # Replace the executable
+        shutil.move(new_exe_path, current_exe_path)
+        logging.info("Executable replaced successfully.")
+        
+        # Restart the application
+        subprocess.Popen([current_exe_path])
+        logging.info("Application restarted successfully.")
+    except Exception as e:
+        logging.error(f"Error during update: {e}")
+        QMessageBox.critical(None, "Update Error", f"An error occurred during the update: {e}")
+        sys.exit(1)
 
 class ApplicationSelectionDialog(QDialog):
     def __init__(self, parent=None):
@@ -193,9 +234,11 @@ class SettingsWindow(QDialog):
 
     def toggle_auto_mute(self, state):
         enabled = (state == Qt.Checked)
-        self.app_list.setEnabled(enabled)
+        # Allow the app list and remove button to always be enabled
+        self.app_list.setEnabled(True)
+        self.remove_app_btn.setEnabled(True)
+        # Enable or disable only the select button based on the checkbox
         self.select_apps_btn.setEnabled(enabled)
-        self.remove_app_btn.setEnabled(enabled)
         self.auto_mute_label.setEnabled(enabled)
 
     def load_settings(self):
@@ -291,9 +334,9 @@ class SettingsWindow(QDialog):
 
         self.enable_auto_mute_checkbox.setChecked(False)
         self.app_list.clear()
-        self.app_list.setEnabled(False)
+        self.app_list.setEnabled(True)
         self.select_apps_btn.setEnabled(False)
-        self.remove_app_btn.setEnabled(False)
+        self.remove_app_btn.setEnabled(True)
         self.auto_mute_label.setEnabled(False)
 
         self.tray_checkbox.setChecked(False)
@@ -422,6 +465,7 @@ class MicMaster(QWidget):
         self.recording = False
         self.pressed_keys = set()
         self.auto_mute_apps = []
+        self.enable_auto_mute = False  # Added attribute
         self.app_check_timer = QTimer(self)
         self.app_check_timer.timeout.connect(self.check_auto_mute_apps)
         self.app_check_timer.start(5000)  # Check every 5 seconds
@@ -583,6 +627,7 @@ class MicMaster(QWidget):
                     self.auto_mute_apps = settings.get('auto_mute_apps', [])
                     self.create_desktop_shortcut = settings.get('create_desktop_shortcut', False)
                     self.enable_logging = settings.get('enable_logging', True)
+                    self.enable_auto_mute = settings.get('enable_auto_mute', False)  # Added line
             except Exception as e:
                 logging.error(f"Error loading settings: {e}")
         else:
@@ -592,6 +637,7 @@ class MicMaster(QWidget):
             self.auto_mute_apps = []
             self.create_desktop_shortcut = False
             self.enable_logging = True
+            self.enable_auto_mute = False  # Default value
 
         # Do NOT automatically create or remove desktop shortcuts on startup
         # Let the user handle it through the Settings UI
@@ -804,7 +850,7 @@ class MicMaster(QWidget):
 
     def check_auto_mute_apps(self):
         """Check if any of the auto-mute applications are running."""
-        if not self.auto_mute_apps:
+        if not self.auto_mute_apps or not self.enable_auto_mute:
             return
 
         try:
@@ -965,20 +1011,25 @@ class MicMaster(QWidget):
             self.check_updates_btn.setEnabled(True)
 
     def download_update(self, url):
-        """Download the latest update executable."""
+        """Download the latest update executable and initiate the update process."""
         try:
             self.update_status_label.setText("Downloading update...")
             self.update_status_label.repaint()
             response = requests.get(url, stream=True)
             total_length = response.headers.get('content-length')
 
+            update_filename = "MicMaster_update.exe"  # Temporary update file
+
+            if os.path.exists(update_filename):
+                os.remove(update_filename)  # Remove if it already exists
+
             if total_length is None:  # no content length header
-                with open("MicMaster_new.exe", 'wb') as f:
+                with open(update_filename, 'wb') as f:
                     f.write(response.content)
             else:
                 dl = 0
                 total_length = int(total_length)
-                with open("MicMaster_new.exe", 'wb') as f:
+                with open(update_filename, 'wb') as f:
                     for data in response.iter_content(chunk_size=4096):
                         dl += len(data)
                         f.write(data)
@@ -988,8 +1039,18 @@ class MicMaster(QWidget):
             QMessageBox.information(
                 self,
                 "Download Complete",
-                "Update downloaded successfully. Please close the application and run the new executable."
+                "Update downloaded successfully. The application will now update and restart."
             )
+
+            # Path to the new executable
+            new_exe = os.path.join(os.getcwd(), "MicMaster_update.exe")
+            current_exe = sys.executable
+
+            # Launch the updater process
+            subprocess.Popen([current_exe, "--update", new_exe])
+
+            # Exit the main application to allow the updater to replace the executable
+            QApplication.quit()
         except Exception as e:
             logging.error(f"Error downloading update: {e}")
             QMessageBox.critical(self, "Download Failed", "Failed to download the update.")
@@ -1060,9 +1121,17 @@ class MicMaster(QWidget):
             QMessageBox.critical(self, "Error", "Failed to remove desktop shortcut.")
             return
 
+
 def main():
     pythoncom.CoInitialize()
     app = QApplication(sys.argv)
+
+    # Check if the script is launched with the update argument
+    if len(sys.argv) == 3 and sys.argv[1] == "--update":
+        new_exe_path = sys.argv[2]
+        current_exe_path = sys.executable
+        perform_update(new_exe_path, current_exe_path)
+        sys.exit(0)
 
     # Ensure the icons directory exists
     icons_dir = os.path.join(os.path.dirname(__file__), "icons")
