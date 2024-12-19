@@ -8,7 +8,7 @@
 
 - [Features](#features)
 - [Requirements](#requirements)
-- [Installation](#installation)
+- [Download and Run](#download-and-run)
 - [Usage](#usage)
 - [Settings](#settings)
 - [Hotkey Configuration](#hotkey-configuration)
@@ -16,7 +16,6 @@
 - [System Tray Integration](#system-tray-integration)
 - [Checking for Updates](#checking-for-updates)
 - [Contributing](#contributing)
-- [License](#license)
 
 ## Features
 
@@ -46,47 +45,18 @@
   - comtypes
   - win32com
 
-## Installation
+## Download and Run
 
-### Using the Packaged Executable
+**MicMaster** is distributed as a standalone executable for Windows. To get started:
 
 1. **Download the Latest Release:**
    - Navigate to the [Releases](https://github.com/balki97/MicMaster/releases) section of this repository.
    - Download the latest `MicMaster.exe` file.
 
-2. **Run the Installer:**
-   - Double-click the downloaded `MicMaster.exe` file.
-   - Follow the on-screen instructions to install MicMaster on your system.
-
-3. **Launch MicMaster:**
-   - After installation, MicMaster will be available in your Start Menu.
-   - Open the application to begin managing your microphone settings.
-
-### Building from Source *(Optional)*
-
-If you prefer to build MicMaster from source, follow these steps:
-
-1. **Clone the Repository:**
-   ```bash
-   git clone https://github.com/balki97/MicMaster.git
-   cd MicMaster
-   ```
-
-2. **Create a Virtual Environment:**
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate
-   ```
-
-3. **Install Dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Run the Application:**
-   ```bash
-   python MicMaster.py
-   ```
+2. **Run the Application:**
+   - Locate the downloaded `MicMaster.exe` file in your Downloads folder or the location you chose.
+   - Double-click `MicMaster.exe` to launch the application.
+   - No installation is required; MicMaster runs directly from the executable.
 
 ## Usage
 
@@ -175,36 +145,32 @@ Contributions are welcome! To contribute to MicMaster:
 
 2. **Clone Your Fork:**
    ```bash
-   git clone https://github.com/yourusername/MicMaster.git
-   cd MicMaster
-   ```
+    git clone https://github.com/balki97/MicMaster.git
+    cd MicMaster
+    ```
 
 3. **Create a New Branch:**
-   ```bash
-   git checkout -b feature/YourFeatureName
-   ```
+    ```bash
+    git checkout -b feature/YourFeatureName
+    ```
 
 4. **Make Your Changes:**
-   - Implement your feature or bug fix.
+    - Implement your feature or bug fix.
 
 5. **Commit Your Changes:**
-   ```bash
-   git commit -m "Add feature: YourFeatureName"
-   ```
+    ```bash
+    git commit -m "Add feature: YourFeatureName"
+    ```
 
 6. **Push to Your Fork:**
-   ```bash
-   git push origin feature/YourFeatureName
-   ```
+    ```bash
+    git push origin feature/YourFeatureName
+    ```
 
 7. **Create a Pull Request:**
-   - Navigate to your fork on GitHub and click **Compare & pull request**.
+    - Navigate to your fork on GitHub and click **Compare & pull request**.
 
 Please ensure that your contributions adhere to the project's coding standards and include relevant tests where applicable.
-
-## License
-
-[MIT License](LICENSE)
 
 ---
 
