@@ -21,7 +21,7 @@ import requests
 from PyQt5.QtCore import QUrl
 
 # Define the current version
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 SETTINGS_FILE = 'settings.json'
 LOG_FILE = 'app.log'
@@ -188,7 +188,7 @@ class SettingsWindow(QDialog):
 
                 self.volume_spinbox.setValue(settings.get('volume', 100))
                 self.startup_checkbox.setChecked(settings.get('startup', False))
-                self.notifications_checkbox.setChecked(settings.get('notifications', True))
+                self.notifications_checkbox.setChecked(settings.get('notifications', False))  # Changed default to False
                 self.sound_notification_checkbox.setChecked(settings.get('sound_notifications', False))
                 self.theme_combo.setCurrentText(settings.get('theme', 'Dark'))
 
@@ -259,7 +259,7 @@ class SettingsWindow(QDialog):
     def reset_settings(self):
         self.volume_spinbox.setValue(100)
         self.startup_checkbox.setChecked(False)
-        self.notifications_checkbox.setChecked(True)
+        self.notifications_checkbox.setChecked(False)  # Changed default to False
         self.sound_notification_checkbox.setChecked(False)
         self.theme_combo.setCurrentText("Dark")
 
@@ -346,6 +346,7 @@ class SettingsWindow(QDialog):
                     shortcut.IconLocation = icon_location
                 shortcut.save()
                 logging.info("Desktop shortcut created.")
+
                 # Notify success
                 try:
                     notification.notify(
@@ -368,7 +369,6 @@ class SettingsWindow(QDialog):
             if os.path.exists(shortcut_path):
                 os.remove(shortcut_path)
                 logging.info("Desktop shortcut removed.")
-                # No notification when removing shortcut
             else:
                 logging.info("Desktop shortcut does not exist.")
         except Exception as e:
@@ -512,6 +512,10 @@ class MicMaster(QWidget):
         self.setLayout(layout)
         self.setWindowTitle('MicMaster')
         self.resize(300, 400)  # Allow resizing
+
+        # **Remove the Maximize Button**
+        # This line removes the maximize button while keeping the window resizable
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowMaximizeButtonHint)
 
     def show_help(self):
         help_message = """
