@@ -511,7 +511,8 @@ class MicMaster(QWidget):
         self.notifications_enabled = False
         self.pressed_keys = set()
         self.auto_mute_apps = []
-        self.enable_auto_mute = False  # Added attribute
+        self.enable_auto_mute = False
+        self.enable_logging = False
         self.app_check_timer = QTimer(self)
         self.app_check_timer.timeout.connect(self.check_auto_mute_apps)
         self.app_check_timer.start(5000)  # Check every 5 seconds
@@ -1065,7 +1066,7 @@ class MicMaster(QWidget):
                 else:
                     tray_icon_path = self.resource_path(os.path.join("images", "mic_on.png"))
                 self.tray_icon.setIcon(QIcon(tray_icon_path))
-    
+
         except Exception as e:
             logging.error(f"Error toggling mute state: {e}")
             QMessageBox.critical(self, "Error", "Failed to toggle microphone.")
