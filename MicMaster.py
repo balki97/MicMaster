@@ -7,9 +7,10 @@ from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QSlider, QHBoxLayout,
     QCheckBox, QSystemTrayIcon, QMenu, QAction, QDialog, QSpinBox, QComboBox,
-    QMessageBox, QListWidget, QListWidgetItem, QDialogButtonBox, QAbstractItemView
+    QMessageBox, QListWidget, QListWidgetItem, QDialogButtonBox, QAbstractItemView,
+    QInputDialog
 )
-from PyQt5.QtCore import Qt, QEvent, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QEvent, QTimer, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor
 from plyer import notification
 import keyboard
@@ -18,13 +19,14 @@ import os
 import json
 import winsound
 import requests
-from PyQt5.QtCore import QUrl
 import shutil
 import subprocess
 import time
+from threading import Thread
+from win10toast_click import ToastNotifier
 
 # Define the current version
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 
 SETTINGS_FILE = 'settings.json'
 LOG_FILE = 'app.log'
@@ -118,6 +120,99 @@ class ApplicationSelectionDialog(QDialog):
         selected_items = self.process_list.selectedItems()
         return [item.text() for item in selected_items]
 
+class ProfileManagementDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manage Profiles")
+        self.setMinimumSize(300, 400)
+        self.parent_widget = parent
+        layout = QVBoxLayout()
+
+        self.profile_list = QListWidget()
+        self.profile_list.addItems(self.parent_widget.profiles)
+        self.profile_list.setCurrentRow(self.parent_widget.current_profile_index)
+        layout.addWidget(self.profile_list)
+
+        buttons_layout = QHBoxLayout()
+        self.new_profile_btn = QPushButton("New Profile")
+        self.new_profile_btn.clicked.connect(self.create_profile)
+        buttons_layout.addWidget(self.new_profile_btn)
+
+        self.rename_profile_btn = QPushButton("Rename Profile")
+        self.rename_profile_btn.clicked.connect(self.rename_profile)
+        buttons_layout.addWidget(self.rename_profile_btn)
+
+        self.delete_profile_btn = QPushButton("Delete Profile")
+        self.delete_profile_btn.clicked.connect(self.delete_profile)
+        buttons_layout.addWidget(self.delete_profile_btn)
+
+        layout.addLayout(buttons_layout)
+
+        # OK and Cancel buttons
+        ok_cancel_layout = QHBoxLayout()
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.clicked.connect(self.accept)
+        ok_cancel_layout.addWidget(self.ok_btn)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        ok_cancel_layout.addWidget(self.cancel_btn)
+
+        layout.addLayout(ok_cancel_layout)
+
+        self.setLayout(layout)
+
+    def create_profile(self):
+        profile_name, ok = QInputDialog.getText(self, "New Profile", "Enter profile name:")
+        if ok and profile_name:
+            if profile_name in self.parent_widget.profiles:
+                QMessageBox.warning(self, "Duplicate Profile", "A profile with this name already exists.")
+                return
+            self.parent_widget.profiles.append(profile_name)
+            self.parent_widget.settings['profiles'][profile_name] = self.parent_widget.default_profile_settings()
+            self.parent_widget.save_settings()
+            self.profile_list.addItem(profile_name)
+            logging.info(f"Profile '{profile_name}' created.")
+
+    def rename_profile(self):
+        selected_items = self.profile_list.selectedItems()
+        if not selected_items:
+            return
+        old_name = selected_items[0].text()
+        new_name, ok = QInputDialog.getText(self, "Rename Profile", "Enter new profile name:", text=old_name)
+        if ok and new_name:
+            if new_name in self.parent_widget.profiles:
+                QMessageBox.warning(self, "Duplicate Profile", "A profile with this name already exists.")
+                return
+            index = self.parent_widget.profiles.index(old_name)
+            self.parent_widget.profiles[index] = new_name
+            self.parent_widget.settings['profiles'][new_name] = self.parent_widget.settings['profiles'].pop(old_name)
+            self.parent_widget.save_settings()
+            self.profile_list.currentItem().setText(new_name)
+            logging.info(f"Profile '{old_name}' renamed to '{new_name}'.")
+
+    def delete_profile(self):
+        selected_items = self.profile_list.selectedItems()
+        if not selected_items:
+            return
+        profile_name = selected_items[0].text()
+        if profile_name == "Default":
+            QMessageBox.warning(self, "Delete Profile", "The 'Default' profile cannot be deleted.")
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete Profile",
+            f"Are you sure you want to delete the profile '{profile_name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            index = self.parent_widget.profiles.index(profile_name)
+            self.parent_widget.profiles.pop(index)
+            self.parent_widget.settings['profiles'].pop(profile_name)
+            self.parent_widget.save_settings()
+            self.profile_list.takeItem(self.profile_list.row(selected_items[0]))
+            logging.info(f"Profile '{profile_name}' deleted.")
 
 class SettingsWindow(QDialog):
     def __init__(self, parent=None):
@@ -127,6 +222,23 @@ class SettingsWindow(QDialog):
         self.setMinimumSize(400, 600)
         layout = QVBoxLayout()
 
+        # Profile Management
+        profile_layout = QHBoxLayout()
+        self.profile_label = QLabel("Current Profile:")
+        profile_layout.addWidget(self.profile_label)
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItems(self.parent_widget.profiles)
+        self.profile_combo.setCurrentIndex(self.parent_widget.current_profile_index)
+        self.profile_combo.currentIndexChanged.connect(self.switch_profile)
+        profile_layout.addWidget(self.profile_combo)
+
+        self.manage_profiles_btn = QPushButton("Manage Profiles")
+        self.manage_profiles_btn.clicked.connect(self.manage_profiles)
+        profile_layout.addWidget(self.manage_profiles_btn)
+
+        layout.addLayout(profile_layout)
+
         # Default Volume
         self.volume_label = QLabel("Default Volume:")
         layout.addWidget(self.volume_label)
@@ -134,7 +246,6 @@ class SettingsWindow(QDialog):
         self.volume_spinbox = QSpinBox()
         self.volume_spinbox.setMinimum(0)
         self.volume_spinbox.setMaximum(100)
-        self.volume_spinbox.setValue(100)
         layout.addWidget(self.volume_spinbox)
 
         # Startup Option
@@ -187,7 +298,7 @@ class SettingsWindow(QDialog):
         self.desktop_shortcut_checkbox = QCheckBox("Create Desktop Shortcut")
         layout.addWidget(self.desktop_shortcut_checkbox)
 
-        # **Enable Logging Option**
+        # Enable Logging Option
         self.enable_logging_checkbox = QCheckBox("Enable Logging")
         layout.addWidget(self.enable_logging_checkbox)
 
@@ -210,6 +321,32 @@ class SettingsWindow(QDialog):
 
         # Connect checkboxes to enable/disable related widgets
         self.enable_auto_mute_checkbox.stateChanged.connect(self.toggle_auto_mute)
+
+    def manage_profiles(self):
+        dialog = ProfileManagementDialog(self.parent_widget)
+        if dialog.exec_():
+            self.profile_combo.clear()
+            self.profile_combo.addItems(self.parent_widget.profiles)
+            self.profile_combo.setCurrentIndex(self.parent_widget.current_profile_index)
+
+    def switch_profile(self, index):
+        if index != self.parent_widget.current_profile_index:
+            logging.info(f"Switching profile from index {self.parent_widget.current_profile_index} to {index}.")
+            if index < len(self.parent_widget.profiles):
+                self.parent_widget.current_profile_index = index
+                self.parent_widget.settings['current_profile'] = index
+                self.parent_widget.load_current_profile()
+                QMessageBox.information(self, "Profile Switched", f"Switched to profile '{self.parent_widget.profiles[index]}'.")
+                logging.info(f"Switched to profile '{self.parent_widget.profiles[index]}'.")
+                self.load_settings()  # Refresh the settings fields with the new profile
+            else:
+                logging.error(f"Invalid profile index: {index}. Reverting to the first profile.")
+                QMessageBox.warning(self, "Profile Switch Failed", "Selected profile does not exist. Reverting to the default profile.")
+                self.parent_widget.current_profile_index = 0
+                self.parent_widget.settings['current_profile'] = 0
+                self.parent_widget.load_current_profile()
+                self.profile_combo.setCurrentIndex(0)
+                self.load_settings()
 
     def select_applications(self):
         dialog = ApplicationSelectionDialog(self)
@@ -242,90 +379,80 @@ class SettingsWindow(QDialog):
         self.auto_mute_label.setEnabled(enabled)
 
     def load_settings(self):
-        if os.path.exists(SETTINGS_FILE):
-            try:
-                with open(SETTINGS_FILE, 'r') as f:
-                    settings = json.load(f)
+        profile = self.parent_widget.get_current_profile()
+        self.volume_spinbox.setValue(profile.get('volume', 100))
+        self.startup_checkbox.setChecked(profile.get('startup', False))
+        self.notifications_checkbox.setChecked(profile.get('notifications', False))
+        self.sound_notification_checkbox.setChecked(profile.get('sound_notifications', False))
+        self.theme_combo.setCurrentText(profile.get('theme', 'Dark'))
 
-                self.volume_spinbox.setValue(settings.get('volume', 100))
-                self.startup_checkbox.setChecked(settings.get('startup', False))
-                self.notifications_checkbox.setChecked(settings.get('notifications', False))
-                self.sound_notification_checkbox.setChecked(settings.get('sound_notifications', False))
-                self.theme_combo.setCurrentText(settings.get('theme', 'Dark'))
+        self.enable_auto_mute_checkbox.setChecked(profile.get('enable_auto_mute', False))
+        auto_mute_apps = profile.get('auto_mute_apps', [])
+        self.app_list.clear()
+        self.app_list.addItems(auto_mute_apps)
 
-                self.enable_auto_mute_checkbox.setChecked(settings.get('enable_auto_mute', False))
-                auto_mute_apps = settings.get('auto_mute_apps', [])
-                self.app_list.addItems(auto_mute_apps)
+        self.tray_checkbox.setChecked(profile.get('tray_enabled', False))
 
-                self.tray_checkbox.setChecked(settings.get('tray_enabled', False))
+        self.desktop_shortcut_checkbox.setChecked(profile.get('create_desktop_shortcut', False))
 
-                self.desktop_shortcut_checkbox.setChecked(settings.get('create_desktop_shortcut', False))
-
-                self.enable_logging_checkbox.setChecked(settings.get('enable_logging', True))  # Default True
-            except Exception as e:
-                logging.error(f"Error loading settings: {e}")
-                QMessageBox.critical(self, "Error", "Failed to load settings.")
-        else:
-            self.reset_settings()
+        self.enable_logging_checkbox.setChecked(profile.get('enable_logging', True))  # Default True
 
         # Ensure widgets are enabled/disabled based on loaded settings
         self.toggle_auto_mute(self.enable_auto_mute_checkbox.isChecked())
 
     def save_settings(self):
-        default_volume = self.volume_spinbox.value()
-        startup_enabled = self.startup_checkbox.isChecked()
-        notifications_enabled = self.notifications_checkbox.isChecked()
-        sound_notifications_enabled = self.sound_notification_checkbox.isChecked()
-        selected_theme = self.theme_combo.currentText()
+        profile = self.parent_widget.get_current_profile()
+        profile['volume'] = self.volume_spinbox.value()
+        profile['startup'] = self.startup_checkbox.isChecked()
+        profile['notifications'] = self.notifications_checkbox.isChecked()
+        profile['sound_notifications'] = self.sound_notification_checkbox.isChecked()
+        profile['theme'] = self.theme_combo.currentText()
 
-        enable_auto_mute = self.enable_auto_mute_checkbox.isChecked()
-        auto_mute_apps = [self.app_list.item(i).text() for i in range(self.app_list.count())]
+        profile['enable_auto_mute'] = self.enable_auto_mute_checkbox.isChecked()
+        profile['auto_mute_apps'] = [self.app_list.item(i).text() for i in range(self.app_list.count())]
 
-        tray_enabled = self.tray_checkbox.isChecked()
-        create_desktop_shortcut = self.desktop_shortcut_checkbox.isChecked()
+        profile['tray_enabled'] = self.tray_checkbox.isChecked()
+        profile['create_desktop_shortcut'] = self.desktop_shortcut_checkbox.isChecked()
 
-        enable_logging = self.enable_logging_checkbox.isChecked()
+        profile['enable_logging'] = self.enable_logging_checkbox.isChecked()
 
-        # Save settings to JSON
-        settings = {
-            'volume': default_volume,
-            'startup': startup_enabled,
-            'notifications': notifications_enabled,
-            'sound_notifications': sound_notifications_enabled,
-            'theme': selected_theme,
-            'enable_auto_mute': enable_auto_mute,
-            'auto_mute_apps': auto_mute_apps,
-            'tray_enabled': tray_enabled,
-            'create_desktop_shortcut': create_desktop_shortcut,
-            'enable_logging': enable_logging
-        }
-
-        try:
-            with open(SETTINGS_FILE, 'w') as f:
-                json.dump(settings, f, indent=4)
-            logging.info("Settings saved successfully.")
-        except Exception as e:
-            logging.error(f"Error saving settings: {e}")
-            QMessageBox.critical(self, "Error", "Failed to save settings.")
-            return
+        self.parent_widget.settings['current_profile'] = self.parent_widget.current_profile_index
+        self.parent_widget.save_settings()
 
         # Handle Desktop Shortcut
-        if create_desktop_shortcut:
-            self.add_desktop_shortcut()
+        if profile['create_desktop_shortcut']:
+            self.parent_widget.create_desktop_shortcut_method()
         else:
-            self.remove_desktop_shortcut_method()
+            self.parent_widget.remove_desktop_shortcut_method()
 
-        if startup_enabled:
-            self.add_to_startup()
+        if profile['startup']:
+            self.parent_widget.add_to_startup()
         else:
-            self.remove_from_startup()
+            self.parent_widget.remove_from_startup()
 
-        # **Apply Logging Settings**
-        self.parent_widget.setup_logging(enable_logging)
+        # Apply Logging Settings
+        self.parent_widget.setup_logging(profile['enable_logging'])
 
+        QMessageBox.information(self, "Settings Saved", "Settings have been saved successfully.")
         self.accept()
 
     def reset_settings(self):
+        profile = self.parent_widget.get_current_profile()
+        profile['volume'] = 100
+        profile['startup'] = False
+        profile['notifications'] = False
+        profile['sound_notifications'] = False
+        profile['theme'] = 'Dark'
+
+        profile['enable_auto_mute'] = False
+        profile['auto_mute_apps'] = []
+        self.app_list.clear()
+
+        profile['tray_enabled'] = False
+        profile['create_desktop_shortcut'] = False
+
+        profile['enable_logging'] = True
+
         self.volume_spinbox.setValue(100)
         self.startup_checkbox.setChecked(False)
         self.notifications_checkbox.setChecked(False)
@@ -344,109 +471,28 @@ class SettingsWindow(QDialog):
 
         self.enable_logging_checkbox.setChecked(True)
 
-    def add_to_startup(self):
+    def resource_path(self, relative_path):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
         try:
-            # Path to the executable
-            if getattr(sys, 'frozen', False):
-                exe_path = sys.executable
-            else:
-                exe_path = os.path.abspath(sys.argv[0])
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+        return os.path.join(base_path, relative_path)
 
-            startup_folder = os.path.join(
-                os.getenv('APPDATA'),
-                'Microsoft',
-                'Windows',
-                'Start Menu',
-                'Programs',
-                'Startup'
-            )
-            shortcut_path = os.path.join(startup_folder, 'MicMaster.lnk')
+class HotkeyListener(Thread):
+    def __init__(self, callback, hotkey):
+        super().__init__()
+        self.callback = callback
+        self.hotkey = hotkey
+        self.daemon = True
 
-            from win32com.client import Dispatch
-            shell = Dispatch('WScript.Shell')
-            shortcut = shell.CreateShortCut(shortcut_path)
-            shortcut.Targetpath = exe_path
-            shortcut.Arguments = ""
-            shortcut.WorkingDirectory = os.path.dirname(exe_path)
-            shortcut.IconLocation = self.parent_widget.resource_path(os.path.join("icons", "mic_switch_icon.ico"))
-            shortcut.save()
-            logging.info("Added to startup.")
-        except Exception as e:
-            logging.error(f"Error adding to startup: {e}")
-            QMessageBox.critical(self, "Error", "Failed to add to startup.")
-
-    def remove_from_startup(self):
+    def run(self):
         try:
-            startup_folder = os.path.join(
-                os.getenv('APPDATA'),
-                'Microsoft',
-                'Windows',
-                'Start Menu',
-                'Programs',
-                'Startup'
-            )
-            shortcut_path = os.path.join(startup_folder, 'MicMaster.lnk')
-            if os.path.exists(shortcut_path):
-                os.remove(shortcut_path)
-                logging.info("Removed from startup.")
+            keyboard.add_hotkey(self.hotkey, self.callback)
+            logging.info(f"Hotkey '{self.hotkey}' listener started.")
+            keyboard.wait()
         except Exception as e:
-            logging.error(f"Error removing from startup: {e}")
-            QMessageBox.critical(self, "Error", "Failed to remove from startup.")
-
-    def add_desktop_shortcut(self):
-        try:
-            # Path to the executable
-            if getattr(sys, 'frozen', False):
-                exe_path = sys.executable
-            else:
-                exe_path = os.path.abspath(sys.argv[0])
-
-            desktop_folder = os.path.join(os.path.expanduser("~"), "Desktop")
-            shortcut_path = os.path.join(desktop_folder, 'MicMaster.lnk')
-
-            if not os.path.exists(shortcut_path):
-                from win32com.client import Dispatch
-                shell = Dispatch('WScript.Shell')
-                shortcut = shell.CreateShortCut(shortcut_path)
-                shortcut.Targetpath = exe_path
-                shortcut.Arguments = ""
-                shortcut.WorkingDirectory = os.path.dirname(exe_path)
-                # Access resource_path from parent
-                icon_location = self.parent_widget.resource_path(os.path.join("icons", "mic_switch_icon.ico"))
-                if os.path.exists(icon_location):
-                    shortcut.IconLocation = icon_location
-                shortcut.save()
-                logging.info("Desktop shortcut created.")
-
-                # Notify success
-                try:
-                    notification.notify(
-                        title="MicMaster",
-                        message="Desktop shortcut created successfully.",
-                        timeout=2
-                    )
-                except Exception as e:
-                    logging.error(f"Error showing notification: {e}")
-            else:
-                logging.info("Desktop shortcut already exists.")
-        except Exception as e:
-            logging.error(f"Error creating desktop shortcut: {e}")
-            QMessageBox.critical(self, "Error", "Failed to create desktop shortcut.")
-
-    def remove_desktop_shortcut_method(self):
-        try:
-            desktop_folder = os.path.join(os.path.expanduser("~"), "Desktop")
-            shortcut_path = os.path.join(desktop_folder, 'MicMaster.lnk')
-            if os.path.exists(shortcut_path):
-                os.remove(shortcut_path)
-                logging.info("Desktop shortcut removed.")
-            else:
-                logging.info("Desktop shortcut does not exist.")
-        except Exception as e:
-            logging.error(f"Error removing desktop shortcut: {e}")
-            QMessageBox.critical(self, "Error", "Failed to remove desktop shortcut.")
-            return
-
+            logging.error(f"Error in HotkeyListener thread: {e}")
 
 class MicMaster(QWidget):
     toggle_mute_signal = pyqtSignal()
@@ -462,14 +508,20 @@ class MicMaster(QWidget):
         self.tray_icon = None
         self.tray_enabled = False
         self.use_sound_notification = False
-        self.recording = False
+        self.notifications_enabled = False
         self.pressed_keys = set()
         self.auto_mute_apps = []
         self.enable_auto_mute = False  # Added attribute
         self.app_check_timer = QTimer(self)
         self.app_check_timer.timeout.connect(self.check_auto_mute_apps)
         self.app_check_timer.start(5000)  # Check every 5 seconds
+        self.notifier = ToastNotifier()
 
+        # Profiles
+        self.profiles = []
+        self.current_profile_index = 0
+        self.settings = {}
+        
         # Preload and tint the mic_off.png icon
         self.original_mic_off_icon = QIcon(self.resource_path(os.path.join("images", "mic_off.png")))
         self.tinted_mic_off_icon = QIcon(self.tint_pixmap(os.path.join("images", "mic_off.png"), "red"))
@@ -479,13 +531,15 @@ class MicMaster(QWidget):
         icon_path = self.resource_path(os.path.join("icons", "mic_switch_icon.ico"))
         self.setWindowIcon(QIcon(icon_path))
 
-        # Load the theme and other settings from the settings file
+        # Initialize UI
+        self.initUI()
+
+        # Load settings
         self.load_settings()
 
-        # **Setup Logging Based on Settings**
+        # Setup Logging Based on Settings
         self.setup_logging(self.enable_logging)
 
-        self.initUI()
         self.init_device()
         self.init_tray_icon()
         self.load_hotkey()
@@ -543,7 +597,7 @@ class MicMaster(QWidget):
         volume_layout.addWidget(self.volume_label)
         layout.addLayout(volume_layout)
 
-        self.hotkey_label = QLabel("Press 'Record Hotkey' and then press keys for the hotkey:", self)
+        self.hotkey_label = QLabel("Recorded Hotkey: None", self)
         layout.addWidget(self.hotkey_label)
 
         self.record_hotkey_btn = QPushButton("Record Hotkey", self)
@@ -596,6 +650,65 @@ class MicMaster(QWidget):
         # This line removes the maximize button while keeping the window resizable
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowMaximizeButtonHint)
 
+    def apply_theme(self, theme_name):
+        """Apply the selected theme to the application."""
+        if theme_name == 'Dark':
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: #2e2e2e;
+                    color: #ffffff;
+                }
+                QPushButton {
+                    background-color: #444444;
+                    border: none;
+                    padding: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #555555;
+                }
+                QSlider::groove:horizontal {
+                    height: 8px;
+                    background: #444444;
+                    border-radius: 4px;
+                }
+                QSlider::handle:horizontal {
+                    background: #ffffff;
+                    border: 1px solid #5c5c5c;
+                    width: 14px;
+                    margin: -4px 0;
+                    border-radius: 7px;
+                }
+            """)
+            logging.info("Applied Dark theme.")
+        else:
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: #f0f0f0;
+                    color: #000000;
+                }
+                QPushButton {
+                    background-color: #dddddd;
+                    border: none;
+                    padding: 10px;
+                }
+                QPushButton:hover {
+                    background-color: #cccccc;
+                }
+                QSlider::groove:horizontal {
+                    height: 8px;
+                    background: #cccccc;
+                    border-radius: 4px;
+                }
+                QSlider::handle:horizontal {
+                    background: #000000;
+                    border: 1px solid #5c5c5c;
+                    width: 14px;
+                    margin: -4px 0;
+                    border-radius: 7px;
+                }
+            """)
+            logging.info("Applied Light theme.")
+
     def show_help(self):
         help_message = """
         MicMaster Help:
@@ -605,6 +718,7 @@ class MicMaster(QWidget):
         - View real-time audio level.
         - Minimize to the tray to keep MicMaster running in the background.
         - Check for updates to stay up-to-date with the latest features.
+        - Manage multiple profiles for different settings configurations.
         """
         QMessageBox.information(self, "MicMaster Help", help_message)
 
@@ -619,72 +733,123 @@ class MicMaster(QWidget):
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, 'r') as f:
-                    settings = json.load(f)
-                    selected_theme = settings.get('theme', 'Dark')
-                    self.apply_theme(selected_theme)
-                    self.use_sound_notification = settings.get('sound_notifications', False)
-                    self.tray_enabled = settings.get('tray_enabled', False)
-                    self.auto_mute_apps = settings.get('auto_mute_apps', [])
-                    self.create_desktop_shortcut = settings.get('create_desktop_shortcut', False)
-                    self.enable_logging = settings.get('enable_logging', True)
-                    self.enable_auto_mute = settings.get('enable_auto_mute', False)  # Added line
+                    self.settings = json.load(f)
+                self.profiles = list(self.settings.get('profiles', {}).keys())
+                if not self.profiles:
+                    self.profiles = ['Default']
+                    self.settings['profiles'] = {'Default': self.default_profile_settings()}
+                self.current_profile_index = self.settings.get('current_profile', 0)
+                if self.current_profile_index >= len(self.profiles):
+                    self.current_profile_index = 0
+                self.apply_profile_settings()
             except Exception as e:
                 logging.error(f"Error loading settings: {e}")
+                QMessageBox.critical(self, "Error", "Failed to load settings.")
         else:
-            self.apply_theme('Dark')
-            self.use_sound_notification = False
-            self.tray_enabled = False
-            self.auto_mute_apps = []
-            self.create_desktop_shortcut = False
-            self.enable_logging = True
-            self.enable_auto_mute = False  # Default value
+            self.settings = {'profiles': {'Default': self.default_profile_settings()}, 'current_profile': 0}
+            self.profiles = ['Default']
+            self.current_profile_index = 0
+            self.save_settings()
 
-        # Do NOT automatically create or remove desktop shortcuts on startup
-        # Let the user handle it through the Settings UI
+    def save_settings(self):
+        try:
+            with open(SETTINGS_FILE, 'w') as f:
+                json.dump(self.settings, f, indent=4)
+            logging.info("Settings saved successfully.")
+        except Exception as e:
+            logging.error(f"Error saving settings: {e}")
+            QMessageBox.critical(self, "Error", "Failed to save settings.")
 
-    def apply_theme(self, theme):
-        if theme == "Dark":
-            self.setStyleSheet("""
-                QWidget {
-                    background-color: #2c3e50;
-                    color: #ecf0f1;
-                }
-                QPushButton {
-                    background-color: #3498db;
-                    border: none;
-                    color: white;
-                    padding: 10px 20px;
-                    border-radius: 10px;
-                }
-                QPushButton:hover {
-                    background-color: #2980b9;
-                }
-                QLabel {
-                    color: white;
-                    padding: 5px;
-                }
-            """)
-        elif theme == "Light":
-            self.setStyleSheet("""
-                QWidget {
-                    background-color: #ecf0f1;
-                    color: #2c3e50;
-                }
-                QPushButton {
-                    background-color: #3498db;
-                    border: none;
-                    color: white;
-                    padding: 10px 20px;
-                    border-radius: 10px;
-                }
-                QPushButton:hover {
-                    background-color: #2980b9;
-                }
-                QLabel {
-                    color: #2c3e50;
-                    padding: 5px;
-                }
-            """)
+    def default_profile_settings(self):
+        return {
+            'volume': 100,
+            'startup': False,
+            'notifications': False,
+            'sound_notifications': False,
+            'theme': 'Dark',
+            'enable_auto_mute': False,
+            'auto_mute_apps': [],
+            'tray_enabled': False,
+            'create_desktop_shortcut': False,
+            'enable_logging': True,
+            'hotkey': None
+        }
+
+    def get_current_profile(self):
+        profile_name = self.profiles[self.current_profile_index]
+        return self.settings['profiles'][profile_name]
+
+    def get_profiles(self):
+        return self.profiles
+
+    def apply_profile_settings(self):
+        profile = self.get_current_profile()
+        if profile:
+            # Update MicMaster's own UI elements and attributes
+            self.volume_slider.setValue(profile.get('volume', 100))
+            self.use_sound_notification = profile.get('sound_notifications', False)
+            self.notifications_enabled = profile.get('notifications', False)
+            self.tray_enabled = profile.get('tray_enabled', False)
+            self.enable_logging = profile.get('enable_logging', True)
+            self.enable_auto_mute = profile.get('enable_auto_mute', False)
+            self.auto_mute_apps = profile.get('auto_mute_apps', [])
+            self.hotkey = profile.get('hotkey', None)
+
+            # Apply theme
+            self.apply_theme(profile.get('theme', 'Dark'))
+            logging.info(f"Applied profile: {self.profiles[self.current_profile_index]}")
+        else:
+            logging.error(f"Profile at index {self.current_profile_index} does not exist.")
+
+    def add_to_startup(self):
+        try:
+            # Path to the executable
+            if getattr(sys, 'frozen', False):
+                exe_path = sys.executable
+            else:
+                exe_path = os.path.abspath(sys.argv[0])
+
+            startup_folder = os.path.join(
+                os.getenv('APPDATA'),
+                'Microsoft',
+                'Windows',
+                'Start Menu',
+                'Programs',
+                'Startup'
+            )
+            shortcut_path = os.path.join(startup_folder, 'MicMaster.lnk')
+
+            from win32com.client import Dispatch
+            shell = Dispatch('WScript.Shell')
+            shortcut = shell.CreateShortCut(shortcut_path)
+            shortcut.Targetpath = exe_path
+            shortcut.Arguments = ""
+            shortcut.WorkingDirectory = os.path.dirname(exe_path)
+            shortcut.IconLocation = self.resource_path(os.path.join("icons", "mic_switch_icon.ico"))
+            shortcut.save()
+            logging.info("Added to startup.")
+        except Exception as e:
+            logging.error(f"Error adding to startup: {e}")
+            QMessageBox.critical(self, "Error", "Failed to add to startup.")
+
+    def remove_from_startup(self):
+        try:
+            startup_folder = os.path.join(
+                os.getenv('APPDATA'),
+                'Microsoft',
+                'Windows',
+                'Start Menu',
+                'Programs',
+                'Startup'
+            )
+            shortcut_path = os.path.join(startup_folder, 'MicMaster.lnk')
+            if os.path.exists(shortcut_path):
+                os.remove(shortcut_path)
+                logging.info("Removed from startup.")
+        except Exception as e:
+            logging.error(f"Error removing from startup: {e}")
+            QMessageBox.critical(self, "Error", "Failed to remove startup entry.")
+            return
 
     def init_device(self):
         """Initialize the audio device and prepare for volume control."""
@@ -747,6 +912,9 @@ class MicMaster(QWidget):
     def toggle_tray_option(self, state):
         """Enable or disable the system tray option based on checkbox state."""
         self.tray_enabled = (state == Qt.Checked)
+        profile = self.get_current_profile()
+        profile['tray_enabled'] = self.tray_enabled
+        self.save_settings()
         if self.tray_enabled:
             self.init_tray_icon()
         else:
@@ -777,7 +945,7 @@ class MicMaster(QWidget):
 
     def start_recording(self):
         """Start recording the hotkey from user input."""
-        if self.recording:
+        if hasattr(self, 'recording') and self.recording:
             return  # Already recording
         self.recording = True
         self.pressed_keys.clear()
@@ -787,7 +955,7 @@ class MicMaster(QWidget):
 
     def stop_recording(self):
         """Stop recording the hotkey and set up the hotkey listener."""
-        if not self.recording:
+        if not hasattr(self, 'recording') or not self.recording:
             self.hotkey_label.setText("No recording in progress.")
             return
 
@@ -814,13 +982,22 @@ class MicMaster(QWidget):
             self.current_hotkey = keyboard.add_hotkey(self.hotkey, self.emit_toggle_mute_signal)
             self.hotkey_label.setText(f"Recorded Hotkey: {self.hotkey}")
             logging.info(f"Hotkey recorded: {self.hotkey}")
+            profile = self.get_current_profile()
+            profile['hotkey'] = self.hotkey
+            self.save_settings()
         except Exception as e:
             logging.error(f"Error setting hotkey: {e}")
             self.hotkey_label.setText("Error: Invalid hotkey.")
 
+    @pyqtSlot()
     def emit_toggle_mute_signal(self):
         """Emit the toggle_mute_signal to safely toggle mute in the main thread."""
-        self.toggle_mute_signal.emit()
+        try:
+            self.toggle_mute_signal.emit()
+            logging.info("toggle_mute_signal emitted.")
+        except Exception as e:
+            logging.error(f"Error emitting toggle_mute_signal: {e}")
+        # No return statement
 
     def record_key(self, e):
         """Record each key press one at a time."""
@@ -830,23 +1007,25 @@ class MicMaster(QWidget):
 
     def load_hotkey(self):
         """Load and set the hotkey from settings."""
-        if os.path.exists(SETTINGS_FILE):
+        profile = self.get_current_profile()
+        hotkey = profile.get('hotkey', None)
+        if hotkey:
+            self.hotkey = hotkey
             try:
-                with open(SETTINGS_FILE, 'r') as f:
-                    settings = json.load(f)
-                    hotkey = settings.get('hotkey', None)
-                    if hotkey:
-                        self.hotkey = hotkey
-                        self.current_hotkey = keyboard.add_hotkey(self.hotkey, self.emit_toggle_mute_signal)
-                        self.hotkey_label.setText(f"Recorded Hotkey: {self.hotkey}")
-                        logging.info(f"Hotkey loaded: {self.hotkey}")
+                # Start a hotkey listener thread
+                self.hotkey_listener = HotkeyListener(self.emit_toggle_mute_signal, self.hotkey)
+                self.hotkey_listener.start()
+                self.hotkey_label.setText(f"Recorded Hotkey: {self.hotkey}")
+                logging.info(f"Hotkey loaded: {self.hotkey}")
             except Exception as e:
                 logging.error(f"Error loading hotkey: {e}")
+                self.hotkey_label.setText("Error: Invalid hotkey.")
 
     def setup_auto_mute(self):
         """Set up auto-mute based on settings."""
-        # This function can be expanded if additional setup is needed
-        pass
+        profile = self.get_current_profile()
+        self.enable_auto_mute = profile.get('enable_auto_mute', False)
+        self.auto_mute_apps = profile.get('auto_mute_apps', [])
 
     def check_auto_mute_apps(self):
         """Check if any of the auto-mute applications are running."""
@@ -877,7 +1056,8 @@ class MicMaster(QWidget):
                 self.mute_btn.setIcon(self.mic_on_icon)
             self.mute_microphone(self.is_muted)
             self.send_notification()
-
+            logging.info(f"Microphone {'muted' if self.is_muted else 'unmuted'}.")
+    
             # Update tray icon if initialized
             if self.tray_icon:
                 if self.is_muted:
@@ -885,35 +1065,56 @@ class MicMaster(QWidget):
                 else:
                     tray_icon_path = self.resource_path(os.path.join("images", "mic_on.png"))
                 self.tray_icon.setIcon(QIcon(tray_icon_path))
-
+    
         except Exception as e:
             logging.error(f"Error toggling mute state: {e}")
             QMessageBox.critical(self, "Error", "Failed to toggle microphone.")
 
     def send_notification(self):
-        """Send a desktop notification or system sound for mic mute/unmute."""
+        """Send a desktop notification with action buttons for mic mute/unmute."""
         status = "Muted" if self.is_muted else "Unmuted"
 
-        # Check settings to decide between desktop notification or system sound
-        if self.use_sound_notification:
-            # Using winsound with .wav files
-            sound_file = os.path.join("sounds", "mute_sound.wav") if self.is_muted else os.path.join("sounds", "unmute_sound.wav")
-            try:
-                winsound.PlaySound(self.resource_path(sound_file), winsound.SND_FILENAME | winsound.SND_ASYNC)
-            except Exception as e:
-                logging.error(f"Error playing sound: {e}")
-                # Fallback to system beep
-                if self.is_muted:
-                    winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
-                else:
-                    winsound.MessageBeep(winsound.MB_OK)
-        else:
-            # Send a desktop notification
-            notification.notify(
-                title="MicMaster",
-                message=f"Microphone {status}",
-                timeout=2
-            )
+        if self.notifications_enabled:
+            if self.use_sound_notification:
+                # Using winsound with .wav files
+                sound_file = os.path.join("sounds", "mute_sound.wav") if self.is_muted else os.path.join("sounds", "unmute_sound.wav")
+                try:
+                    winsound.PlaySound(self.resource_path(sound_file), winsound.SND_FILENAME | winsound.SND_ASYNC)
+                except Exception as e:
+                    logging.error(f"Error playing sound: {e}")
+                    # Fallback to system beep
+                    if self.is_muted:
+                        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                    else:
+                        winsound.MessageBeep(winsound.MB_OK)
+            else:
+                # Send interactive notification
+                try:
+                    self.notifier.show_toast(
+                        "MicMaster",
+                        f"Microphone {status}",
+                        icon_path=self.resource_path(os.path.join("icons", "mic_switch_icon.ico")),
+                        duration=5,
+                        threaded=True,
+                        callback_on_click=self.handle_toggle_mute_callback
+                    )
+                except Exception as e:
+                    logging.error(f"Error showing interactive notification: {e}")
+                    # Fallback to non-interactive notification
+                    notification.notify(
+                        title="MicMaster",
+                        message=f"Microphone {status}",
+                        timeout=2
+                    )
+
+    def handle_toggle_mute_callback(self):
+        """Handle the callback from the notification click."""
+        try:
+            self.toggle_mute()
+            logging.info("Microphone toggle triggered via notification click.")
+        except Exception as e:
+            logging.error(f"Error in notification callback: {e}")
+        # Do not return anything
 
     def mute_microphone(self, mute):
         """Mute or unmute the microphone using pycaw."""
@@ -1018,12 +1219,12 @@ class MicMaster(QWidget):
             response = requests.get(url, stream=True)
             total_length = response.headers.get('content-length')
 
-            update_filename = "MicMaster_update.exe"  # Temporary update file
+            update_filename = "MicMaster_update.exe"
 
             if os.path.exists(update_filename):
-                os.remove(update_filename)  # Remove if it already exists
+                os.remove(update_filename)
 
-            if total_length is None:  # no content length header
+            if total_length is None:
                 with open(update_filename, 'wb') as f:
                     f.write(response.content)
             else:
@@ -1093,10 +1294,12 @@ class MicMaster(QWidget):
 
                 # Notify success
                 try:
-                    notification.notify(
-                        title="MicMaster",
-                        message="Desktop shortcut created successfully.",
-                        timeout=2
+                    self.notifier.show_toast(
+                        "MicMaster",
+                        "Desktop shortcut created successfully.",
+                        icon_path=self.resource_path(os.path.join("icons", "mic_switch_icon.ico")),
+                        duration=2,
+                        threaded=True
                     )
                 except Exception as e:
                     logging.error(f"Error showing notification: {e}")
@@ -1121,41 +1324,67 @@ class MicMaster(QWidget):
             QMessageBox.critical(self, "Error", "Failed to remove desktop shortcut.")
             return
 
+    def load_current_profile(self):
+        """Load the settings for the current profile."""
+        try:
+            self.apply_profile_settings()
+            self.setup_logging(self.enable_logging)
+            self.setup_auto_mute()
+            self.load_hotkey()
+        except Exception as e:
+            logging.error(f"Error loading current profile: {e}")
+            QMessageBox.critical(self, "Error", "Failed to load the selected profile.")
+            # Optionally, revert to the default profile
+            self.current_profile_index = 0
+            self.settings['current_profile'] = 0
+            self.apply_profile_settings()
+
+    def setup_auto_mute(self):
+        """Set up auto-mute based on settings."""
+        profile = self.get_current_profile()
+        self.enable_auto_mute = profile.get('enable_auto_mute', False)
+        self.auto_mute_apps = profile.get('auto_mute_apps', [])
+
+    def toggle_voice_activation(self, state):
+        """Placeholder for voice activation toggle."""
+        pass  # Not implemented in this version
+
+class MicMasterApp:
+    def __init__(self):
+        self.app = QApplication(sys.argv)
+        # Ensure the icons directory exists
+        icons_dir = os.path.join(os.path.dirname(__file__), "icons")
+        if not os.path.exists(icons_dir):
+            setup_logging(True)
+            logging.error("Icons directory not found.")
+            QMessageBox.critical(None, "Error", "Icons directory not found.")
+            sys.exit(1)
+
+        icon_path = os.path.join(os.path.dirname(__file__), "icons", "mic_switch_icon.ico")
+        if not os.path.exists(icon_path):
+            setup_logging(True)
+            logging.error("Application icon not found.")
+            QMessageBox.critical(None, "Error", "Application icon not found.")
+            sys.exit(1)
+
+        self.app.setWindowIcon(QIcon(icon_path))
+
+        self.window = MicMaster()
+        self.window.show()
+
+    def run(self):
+        sys.exit(self.app.exec_())
 
 def main():
     pythoncom.CoInitialize()
-    app = QApplication(sys.argv)
-
     # Check if the script is launched with the update argument
     if len(sys.argv) == 3 and sys.argv[1] == "--update":
         new_exe_path = sys.argv[2]
         current_exe_path = sys.executable
         perform_update(new_exe_path, current_exe_path)
         sys.exit(0)
-
-    # Ensure the icons directory exists
-    icons_dir = os.path.join(os.path.dirname(__file__), "icons")
-    if not os.path.exists(icons_dir):
-        # Initialize logging here if possible, but since logging may be disabled,
-        # we temporarily enable logging to capture this critical error.
-        setup_logging(True)
-        logging.error("Icons directory not found.")
-        QMessageBox.critical(None, "Error", "Icons directory not found.")
-        sys.exit(1)
-
-    icon_path = os.path.join(os.path.dirname(__file__), "icons", "mic_switch_icon.ico")
-    if not os.path.exists(icon_path):
-        setup_logging(True)
-        logging.error("Application icon not found.")
-        QMessageBox.critical(None, "Error", "Application icon not found.")
-        sys.exit(1)
-
-    app.setWindowIcon(QIcon(icon_path))
-
-    window = MicMaster()
-    window.show()
-    sys.exit(app.exec_())
-
+    app_instance = MicMasterApp()
+    app_instance.run()
 
 if __name__ == '__main__':
     main()
