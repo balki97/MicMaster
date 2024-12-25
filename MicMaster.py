@@ -24,9 +24,11 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QSlider, QHBoxLayout,
     QCheckBox, QSystemTrayIcon, QMenu, QAction, QDialog, QSpinBox, QComboBox,
     QMessageBox, QListWidget, QListWidgetItem, QDialogButtonBox, QAbstractItemView,
-    QInputDialog
+    QInputDialog, QProgressBar
 )
 
+import pyaudio
+import numpy as np
 
 VERSION = "1.0.5"
 SETTINGS_FILE = 'settings.json'
@@ -424,6 +426,50 @@ class HotkeyListener(Thread):
             logging.error(f"Error in HotkeyListener thread: {e}")
 
 
+class AudioStreamThread(Thread):
+    audio_level_signal = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__()
+        self.parent = parent
+        self.running = True
+        self.chunk = 1024
+        self.format = pyaudio.paInt16
+        self.channels = 1
+        self.rate = 44100
+
+    def run(self):
+        p = pyaudio.PyAudio()
+        try:
+            stream = p.open(format=self.format,
+                            channels=self.channels,
+                            rate=self.rate,
+                            input=True,
+                            frames_per_buffer=self.chunk)
+        except Exception as e:
+            logging.error(f"Error opening audio stream: {e}")
+            QMessageBox.critical(None, "Error", "Failed to open audio stream for visualization.")
+            return
+
+        while self.running:
+            try:
+                data = stream.read(self.chunk, exception_on_overflow=False)
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                peak = np.abs(audio_data).max()
+                level = int((peak / 32768) * 100)
+                self.parent.update_audio_level_visualization(level)
+            except Exception as e:
+                logging.error(f"Error reading audio stream: {e}")
+                break
+
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+
+    def stop(self):
+        self.running = False
+
+
 class MicMaster(QWidget):
     toggle_mute_signal = pyqtSignal()
 
@@ -467,6 +513,9 @@ class MicMaster(QWidget):
         self.toggle_mute_signal.connect(self.toggle_mute)
 
         self.check_for_updates()
+
+        self.audio_thread = AudioStreamThread(self)
+        self.audio_thread.start()
 
     def setup_logging(self, enable_logging: bool):
         setup_logging(enable_logging)
@@ -551,13 +600,16 @@ class MicMaster(QWidget):
 
         self.audio_level_label = QLabel("Audio Level: 0%", self)
         layout.addWidget(self.audio_level_label)
-        self.audio_level_timer = QTimer(self)
-        self.audio_level_timer.timeout.connect(self.update_audio_level)
-        self.audio_level_timer.start(1000)
+
+        self.audio_level_visual = QProgressBar(self)
+        self.audio_level_visual.setMinimum(0)
+        self.audio_level_visual.setMaximum(100)
+        self.audio_level_visual.setValue(0)
+        layout.addWidget(self.audio_level_visual)
 
         self.setLayout(layout)
         self.setWindowTitle('MicMaster')
-        self.resize(300, 400)
+        self.resize(300, 500)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowMaximizeButtonHint)
 
     def apply_theme(self, theme_name: str):
@@ -587,6 +639,15 @@ class MicMaster(QWidget):
                     margin: -4px 0;
                     border-radius: 7px;
                 }
+                QProgressBar {
+                    border: 2px solid grey;
+                    border-radius: 5px;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background-color: #05B8CC;
+                    width: 20px;
+                }
             """)
             logging.info("Applied Dark theme.")
         else:
@@ -614,6 +675,15 @@ class MicMaster(QWidget):
                     width: 14px;
                     margin: -4px 0;
                     border-radius: 7px;
+                }
+                QProgressBar {
+                    border: 2px solid grey;
+                    border-radius: 5px;
+                    text-align: center;
+                }
+                QProgressBar::chunk {
+                    background-color: #05B8CC;
+                    width: 20px;
                 }
             """)
             logging.info("Applied Light theme.")
@@ -826,11 +896,15 @@ class MicMaster(QWidget):
         super().changeEvent(event)
 
     def closeEvent(self, event):
+        self.audio_thread.stop()
+        self.audio_thread.join()
         event.accept()
 
     def quit_app(self):
         if self.tray_icon:
             self.tray_icon.hide()
+        self.audio_thread.stop()
+        self.audio_thread.join()
         QApplication.quit()
 
     def start_recording(self):
@@ -1003,6 +1077,9 @@ class MicMaster(QWidget):
         except Exception as e:
             logging.error(f"Error updating audio level: {e}")
 
+    def update_audio_level_visualization(self, level: int):
+        self.audio_level_visual.setValue(level)
+
     def check_for_updates(self):
         try:
             self.update_status_label.setText("Checking for updates...")
@@ -1083,6 +1160,9 @@ class MicMaster(QWidget):
                     for data in response.iter_content(chunk_size=4096):
                         dl += len(data)
                         f.write(data)
+                        percent = int(dl * 100 / total_length)
+                        self.update_status_label.setText(f"Downloading update... {percent}%")
+                        self.update_status_label.repaint()
 
             QMessageBox.information(
                 self,
