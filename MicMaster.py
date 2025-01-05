@@ -230,10 +230,21 @@ class SettingsWindow(QDialog):
         self.volume_label = QLabel("Default Volume:")
         layout.addWidget(self.volume_label)
 
-        self.volume_spinbox = QSpinBox()
-        self.volume_spinbox.setMinimum(0)
-        self.volume_spinbox.setMaximum(100)
-        layout.addWidget(self.volume_spinbox)
+        # Create a horizontal layout for the slider and its value label
+        volume_layout = QHBoxLayout()
+
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setMinimum(0)
+        self.volume_slider.setMaximum(100)
+        self.volume_slider.setValue(100)
+        self.volume_slider.setTickInterval(10)
+        self.volume_slider.setTickPosition(QSlider.TicksBelow)
+        self.volume_slider.valueChanged.connect(self.update_volume_label)
+        volume_layout.addWidget(self.volume_slider)
+
+        self.volume_value_label = QLabel("100%")
+        volume_layout.addWidget(self.volume_value_label)
+        layout.addLayout(volume_layout)
 
         self.startup_checkbox = QCheckBox("Start on system boot")
         layout.addWidget(self.startup_checkbox)
@@ -344,7 +355,8 @@ class SettingsWindow(QDialog):
 
     def load_settings(self):
         profile = self.parent_widget.get_current_profile()
-        self.volume_spinbox.setValue(profile.get('volume', 100))
+        self.volume_slider.setValue(profile.get('volume', 100))
+        self.volume_value_label.setText(f"{profile.get('volume', 100)}%")
         self.startup_checkbox.setChecked(profile.get('startup', False))
         self.notifications_checkbox.setChecked(profile.get('notifications', False))
         self.sound_notification_checkbox.setChecked(profile.get('sound_notifications', False))
@@ -360,9 +372,12 @@ class SettingsWindow(QDialog):
 
         self.toggle_auto_mute(self.enable_auto_mute_checkbox.isChecked())
 
+    def update_volume_label(self, value):
+        self.volume_value_label.setText(f"{value}%")
+
     def save_settings(self):
         profile = self.parent_widget.get_current_profile()
-        profile['volume'] = self.volume_spinbox.value()
+        profile['volume'] = self.volume_slider.value()
         profile['startup'] = self.startup_checkbox.isChecked()
         profile['notifications'] = self.notifications_checkbox.isChecked()
         profile['sound_notifications'] = self.sound_notification_checkbox.isChecked()
@@ -427,8 +442,6 @@ class HotkeyListener(Thread):
 
 
 class AudioStreamThread(Thread):
-    audio_level_signal = pyqtSignal(int)
-
     def __init__(self, parent=None):
         super().__init__()
         self.parent = parent
@@ -574,12 +587,6 @@ class MicMaster(QWidget):
         self.stop_record_btn.setToolTip("Stop recording the hotkey combination.")
         layout.addWidget(self.stop_record_btn)
 
-        self.tray_checkbox = QCheckBox("Minimize to system tray", self)
-        self.tray_checkbox.setChecked(self.tray_enabled)
-        self.tray_checkbox.stateChanged.connect(self.toggle_tray_option)
-        self.tray_checkbox.setToolTip("Minimize the app to the system tray.")
-        layout.addWidget(self.tray_checkbox)
-
         self.settings_btn = QPushButton("Settings", self)
         self.settings_btn.clicked.connect(self.open_settings)
         self.settings_btn.setToolTip("Open settings to customize the app.")
@@ -615,78 +622,162 @@ class MicMaster(QWidget):
     def apply_theme(self, theme_name: str):
         if theme_name == 'Dark':
             self.setStyleSheet("""
+                /* General Widget Styles */
                 QWidget {
-                    background-color: #2e2e2e;
-                    color: #ffffff;
+                    background-color: #1e1e1e;
+                    color: #c5c6c7;
+                    font-family: "Segoe UI", sans-serif;
+                    font-size: 10pt;
                 }
+
+                /* QPushButton Styles */
                 QPushButton {
-                    background-color: #444444;
-                    border: none;
-                    padding: 10px;
+                    background-color: #282a36;
+                    border: 2px solid #44475a;
+                    border-radius: 8px;
+                    padding: 8px;
+                    color: #f8f8f2;
                 }
                 QPushButton:hover {
-                    background-color: #555555;
+                    background-color: #44475a;
                 }
+                QPushButton:pressed {
+                    background-color: #6272a4;
+                }
+
+                /* QSlider Styles */
                 QSlider::groove:horizontal {
                     height: 8px;
-                    background: #444444;
+                    background: #44475a;
                     border-radius: 4px;
                 }
                 QSlider::handle:horizontal {
-                    background: #ffffff;
-                    border: 1px solid #5c5c5c;
+                    background: #50fa7b;
+                    border: 1px solid #bd93f9;
                     width: 14px;
-                    margin: -4px 0;
+                    margin: -3px 0;
                     border-radius: 7px;
                 }
+                QSlider::handle:horizontal:hover {
+                    background: #8be9fd;
+                }
+
+                /* QLabel Styles */
+                QLabel {
+                    color: #f8f8f2;
+                }
+
+                /* QComboBox Styles */
+                QComboBox {
+                    background-color: #282a36;
+                    border: 1px solid #44475a;
+                    border-radius: 8px;
+                    padding: 4px;
+                    color: #f8f8f2;
+                }
+                QComboBox QAbstractItemView {
+                    background-color: #282a36;
+                    selection-background-color: #44475a;
+                    selection-color: #f8f8f2;
+                }
+
+                /* QCheckBox Styles */
+                QCheckBox {
+                    padding: 4px;
+                }
+
+                /* QProgressBar Styles */
                 QProgressBar {
-                    border: 2px solid grey;
-                    border-radius: 5px;
+                    border: 2px solid #44475a;
+                    border-radius: 8px;
                     text-align: center;
+                    background-color: #282a36;
                 }
                 QProgressBar::chunk {
-                    background-color: #05B8CC;
-                    width: 20px;
+                    background-color: #50fa7b;
+                    border-radius: 4px;
                 }
             """)
-            logging.info("Applied Dark theme.")
+            logging.info("Applied Modern Dark theme.")
         else:
             self.setStyleSheet("""
+                /* General Widget Styles */
                 QWidget {
-                    background-color: #f0f0f0;
-                    color: #000000;
+                    background-color: #f5f5f5;
+                    color: #2e2e2e;
+                    font-family: "Segoe UI", sans-serif;
+                    font-size: 10pt;
                 }
+
+                /* QPushButton Styles */
                 QPushButton {
-                    background-color: #dddddd;
-                    border: none;
-                    padding: 10px;
+                    background-color: #ffffff;
+                    border: 2px solid #c5c5c5;
+                    border-radius: 8px;
+                    padding: 8px;
+                    color: #2e2e2e;
                 }
                 QPushButton:hover {
-                    background-color: #cccccc;
+                    background-color: #e0e0e0;
                 }
+                QPushButton:pressed {
+                    background-color: #d5d5d5;
+                }
+
+                /* QSlider Styles */
                 QSlider::groove:horizontal {
                     height: 8px;
-                    background: #cccccc;
+                    background: #c5c5c5;
                     border-radius: 4px;
                 }
                 QSlider::handle:horizontal {
-                    background: #000000;
-                    border: 1px solid #5c5c5c;
+                    background: #0078d7;
+                    border: 1px solid #005a9e;
                     width: 14px;
-                    margin: -4px 0;
+                    margin: -3px 0;
                     border-radius: 7px;
                 }
+                QSlider::handle:horizontal:hover {
+                    background: #3399ff;
+                }
+
+                /* QLabel Styles */
+                QLabel {
+                    color: #2e2e2e;
+                }
+
+                /* QComboBox Styles */
+                QComboBox {
+                    background-color: #ffffff;
+                    border: 1px solid #c5c5c5;
+                    border-radius: 8px;
+                    padding: 4px;
+                    color: #2e2e2e;
+                }
+                QComboBox QAbstractItemView {
+                    background-color: #ffffff;
+                    selection-background-color: #0078d7;
+                    selection-color: #ffffff;
+                }
+
+                /* QCheckBox Styles */
+                QCheckBox {
+                    padding: 4px;
+                }
+
+                /* QProgressBar Styles */
                 QProgressBar {
-                    border: 2px solid grey;
-                    border-radius: 5px;
+                    border: 2px solid #c5c5c5;
+                    border-radius: 8px;
                     text-align: center;
+                    background-color: #ffffff;
                 }
                 QProgressBar::chunk {
-                    background-color: #05B8CC;
-                    width: 20px;
+                    background-color: #0078d7;
+                    border-radius: 4px;
                 }
             """)
-            logging.info("Applied Light theme.")
+            logging.info("Applied Modern Light theme.")
 
     def show_help(self):
         help_message = """
@@ -863,6 +954,8 @@ class MicMaster(QWidget):
                 QSystemTrayIcon.Information,
                 2000
             )
+        elif self.tray_icon:
+            self.tray_icon.hide()
 
     def on_tray_icon_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
@@ -885,14 +978,16 @@ class MicMaster(QWidget):
 
     def changeEvent(self, event):
         if event.type() == QEvent.WindowStateChange:
-            if self.isMinimized() and self.tray_enabled:
-                QTimer.singleShot(0, self.hide)
-                self.tray_icon.showMessage(
-                    "MicMaster",
-                    "Application minimized to tray",
-                    QSystemTrayIcon.Information,
-                    2000
-                )
+            if self.isMinimized():
+                profile = self.get_current_profile()
+                if profile.get('tray_enabled', False):
+                    QTimer.singleShot(0, self.hide)
+                    self.tray_icon.showMessage(
+                        "MicMaster",
+                        "Application minimized to tray",
+                        QSystemTrayIcon.Information,
+                        2000
+                    )
         super().changeEvent(event)
 
     def closeEvent(self, event):
@@ -1016,31 +1111,30 @@ class MicMaster(QWidget):
     def send_notification(self):
         status = "Muted" if self.is_muted else "Unmuted"
 
-        if self.notifications_enabled:
-            if self.use_sound_notification:
-                sound_file = os.path.join("sounds", "mute_sound.wav") if self.is_muted else os.path.join("sounds", "unmute_sound.wav")
-                try:
-                    winsound.PlaySound(self.resource_path(sound_file), winsound.SND_FILENAME | winsound.SND_ASYNC)
-                except Exception as e:
-                    logging.error(f"Error playing sound: {e}")
-                    winsound.MessageBeep(winsound.MB_ICONEXCLAMATION if self.is_muted else winsound.MB_OK)
-            else:
-                try:
-                    self.notifier.show_toast(
-                        "MicMaster",
-                        f"Microphone {status}",
-                        icon_path=self.resource_path(os.path.join("icons", "mic_switch_icon.ico")),
-                        duration=5,
-                        threaded=True,
-                        callback_on_click=self.handle_toggle_mute_callback
-                    )
-                except Exception as e:
-                    logging.error(f"Error showing interactive notification: {e}")
-                    notification.notify(
-                        title="MicMaster",
-                        message=f"Microphone {status}",
-                        timeout=2
-                    )
+        if self.use_sound_notification:
+            sound_file = os.path.join("sounds", "mute_sound.wav") if self.is_muted else os.path.join("sounds", "unmute_sound.wav")
+            try:
+                winsound.PlaySound(self.resource_path(sound_file), winsound.SND_FILENAME | winsound.SND_ASYNC)
+            except Exception as e:
+                logging.error(f"Error playing sound: {e}")
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION if self.is_muted else winsound.MB_OK)
+        elif self.notifications_enabled:
+            try:
+                self.notifier.show_toast(
+                    "MicMaster",
+                    f"Microphone {status}",
+                    icon_path=self.resource_path(os.path.join("icons", "mic_switch_icon.ico")),
+                    duration=5,
+                    threaded=True,
+                    callback_on_click=self.handle_toggle_mute_callback
+                )
+            except Exception as e:
+                logging.error(f"Error showing interactive notification: {e}")
+                notification.notify(
+                    title="MicMaster",
+                    message=f"Microphone {status}",
+                    timeout=2
+                )
 
     def handle_toggle_mute_callback(self):
         try:
@@ -1048,6 +1142,7 @@ class MicMaster(QWidget):
             logging.info("Microphone toggle triggered via notification click.")
         except Exception as e:
             logging.error(f"Error in notification callback: {e}")
+        return 0
 
     def mute_microphone(self, mute: bool):
         try:
@@ -1079,6 +1174,7 @@ class MicMaster(QWidget):
 
     def update_audio_level_visualization(self, level: int):
         self.audio_level_visual.setValue(level)
+        self.audio_level_label.setText(f"Audio Level: {level}%")
 
     def check_for_updates(self):
         try:
