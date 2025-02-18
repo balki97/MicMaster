@@ -1,12 +1,10 @@
 import json
 import logging
 import os
-import shutil
 import sys
 import time
 from ctypes import POINTER
 from threading import Thread
-import subprocess
 
 import keyboard
 import psutil
@@ -24,17 +22,15 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QLabel, QSlider, QHBoxLayout,
     QCheckBox, QSystemTrayIcon, QMenu, QAction, QDialog, QComboBox, QMessageBox,
     QListWidget, QListWidgetItem, QDialogButtonBox, QAbstractItemView,
-    QInputDialog, QProgressBar, QProgressDialog
+    QInputDialog, QProgressBar, QTextEdit
 )
 
 import pyaudio
 import numpy as np
 
-VERSION = "1.0.6"
+VERSION = "1.0.0"
 SETTINGS_FILE = 'settings.json'
 LOG_FILE = 'app.log'
-# The new file will be downloaded as this temporary file.
-TEMP_NEW_EXE = "MicMaster_new.exe"
 
 def setup_logging(enable_logging: bool) -> None:
     logger = logging.getLogger()
@@ -54,33 +50,49 @@ def setup_logging(enable_logging: bool) -> None:
 def is_process_running(exe_name: str) -> bool:
     return any(proc.info['name'] == exe_name for proc in psutil.process_iter(['name']))
 
-def perform_update(temp_exe_path: str, current_exe_path: str) -> None:
-    """
-    Create a temporary batch file that waits for this application to exit,
-    then overwrites the current executable with the new file.
-    """
-    updater_bat = os.path.join(os.path.dirname(current_exe_path), "update_temp.bat")
-    bat_contents = f"""
-@echo off
-:loop
-tasklist | findstr /I "{os.path.basename(current_exe_path)}" >nul
-if not errorlevel 1 (
-    timeout /t 1 >nul
-    goto loop
-)
-move /Y "{temp_exe_path}" "{current_exe_path}"
-del "%~f0"
-    """
+def check_for_updates_notify(parent):
     try:
-        with open(updater_bat, "w") as bat_file:
-            bat_file.write(bat_contents)
-        # Launch the updater batch file without waiting.
-        subprocess.Popen(["cmd.exe", "/c", updater_bat], creationflags=subprocess.CREATE_NO_WINDOW)
-        QMessageBox.information(None, "Update Complete",
-                                  "Update applied successfully.\nPlease restart the application manually.")
+        parent.update_status_label.setText("Checking for updates...")
+        parent.update_status_label.repaint()
+        owner = "balki97"
+        repo = "MicMaster"
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+        response = requests.get(api_url, timeout=10)
+        if response.status_code == 404:
+            parent.update_status_label.setText("No releases found on GitHub.")
+            return
+        response.raise_for_status()
+        latest_release = response.json()
+        download_url = ""
+        assets = latest_release.get('assets', [])
+        if assets:
+            download_url = assets[0].get('browser_download_url', '')
+        latest_version = latest_release.get('tag_name', '').lstrip('v')
+        if not latest_version:
+            logging.warning("Latest version not found.")
+            parent.update_status_label.setText("Failed to retrieve version info.")
+            return
+        if version_tuple(latest_version) > version_tuple(VERSION):
+            msg = (f"New version {latest_version} available.\n"
+                   f"You have {VERSION}.\n"
+                   "Please download the latest version from:\n" + download_url)
+            QMessageBox.information(parent, "Update Available", msg)
+            parent.update_status_label.setText("Update available.")
+        else:
+            parent.update_status_label.setText("You are using the latest version.")
+            logging.info("Latest version in use.")
     except Exception as e:
-        logging.error(f"Error during update: {e}")
-        QMessageBox.critical(None, "Update Error", f"Update error: {e}")
+        logging.error(f"Error checking updates: {e}")
+        parent.update_status_label.setText("Error checking updates.")
+    finally:
+        if hasattr(parent, 'check_updates_btn') and parent.check_updates_btn is not None:
+            parent.check_updates_btn.setEnabled(True)
+
+def version_tuple(v):
+    try:
+        return tuple(map(int, v.split(".")))
+    except Exception:
+        return (0,)
 
 class ApplicationSelectionDialog(QDialog):
     def __init__(self, parent=None):
@@ -180,6 +192,27 @@ class ProfileManagementDialog(QDialog):
             self.profile_list.takeItem(self.profile_list.row(selected[0]))
             logging.info(f"Profile '{profile_name}' deleted.")
 
+class LogViewerDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("View Logs")
+        self.resize(600, 400)
+        layout = QVBoxLayout()
+        self.log_text = QTextEdit(self)
+        self.log_text.setReadOnly(True)
+        layout.addWidget(self.log_text)
+        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
+        btn_box.rejected.connect(self.reject)
+        layout.addWidget(btn_box)
+        self.setLayout(layout)
+        self.load_logs()
+    def load_logs(self):
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                self.log_text.setPlainText(f.read())
+        else:
+            self.log_text.setPlainText("Log file not found.")
+
 class SettingsWindow(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -242,8 +275,6 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.tray_checkbox)
         self.desktop_shortcut_checkbox = QCheckBox("Create Desktop Shortcut")
         layout.addWidget(self.desktop_shortcut_checkbox)
-        self.enable_logging_checkbox = QCheckBox("Enable Logging")
-        layout.addWidget(self.enable_logging_checkbox)
         btns_layout = QHBoxLayout()
         self.save_btn = QPushButton("Save")
         self.save_btn.clicked.connect(self.save_settings)
@@ -251,6 +282,9 @@ class SettingsWindow(QDialog):
         self.reset_btn = QPushButton("Reset to Default")
         self.reset_btn.clicked.connect(self.reset_settings)
         btns_layout.addWidget(self.reset_btn)
+        self.view_logs_btn = QPushButton("View Logs")
+        self.view_logs_btn.clicked.connect(self.open_log_viewer)
+        btns_layout.addWidget(self.view_logs_btn)
         layout.addLayout(btns_layout)
         self.setLayout(layout)
         self.load_settings()
@@ -308,7 +342,6 @@ class SettingsWindow(QDialog):
         self.app_list.addItems(profile.get('auto_mute_apps', []))
         self.tray_checkbox.setChecked(profile.get('tray_enabled', False))
         self.desktop_shortcut_checkbox.setChecked(profile.get('create_desktop_shortcut', False))
-        self.enable_logging_checkbox.setChecked(profile.get('enable_logging', True))
         self.toggle_auto_mute(self.enable_auto_mute_checkbox.isChecked())
     def update_volume_label(self, value):
         self.volume_value_label.setText(f"{value}%")
@@ -323,7 +356,6 @@ class SettingsWindow(QDialog):
         profile['auto_mute_apps'] = [self.app_list.item(i).text() for i in range(self.app_list.count())]
         profile['tray_enabled'] = self.tray_checkbox.isChecked()
         profile['create_desktop_shortcut'] = self.desktop_shortcut_checkbox.isChecked()
-        profile['enable_logging'] = self.enable_logging_checkbox.isChecked()
         self.parent_widget.settings['current_profile'] = self.parent_widget.current_profile_index
         self.parent_widget.save_settings()
         if profile['create_desktop_shortcut']:
@@ -334,7 +366,7 @@ class SettingsWindow(QDialog):
             self.parent_widget.add_to_startup()
         else:
             self.parent_widget.remove_from_startup()
-        self.parent_widget.setup_logging(profile['enable_logging'])
+        setup_logging(profile.get('enable_logging', True))
         QMessageBox.information(self, "Settings Saved", "Settings saved successfully.")
         self.accept()
     def reset_settings(self):
@@ -343,6 +375,9 @@ class SettingsWindow(QDialog):
         for key in default:
             profile[key] = default[key]
         self.load_settings()
+    def open_log_viewer(self):
+        dialog = LogViewerDialog(self)
+        dialog.exec_()
     def resource_path(self, relative_path: str) -> str:
         try:
             base_path = sys._MEIPASS
@@ -417,7 +452,6 @@ class MicMaster(QWidget):
         self.notifications_enabled = False
         self.auto_mute_apps = []
         self.enable_auto_mute = False
-        self.enable_logging = False
         self.notifier = ToastNotifier()
         self.profiles = []
         self.current_profile_index = 0
@@ -429,16 +463,14 @@ class MicMaster(QWidget):
         self.audio_level_signal.connect(self.update_audio_level_visualization)
         self.initUI()
         self.load_settings()
-        self.setup_logging(self.enable_logging)
+        setup_logging(self.settings.get('enable_logging', True))
         self.init_device()
         self.init_tray_icon()
         self.load_hotkey()
         self.toggle_mute_signal.connect(self.toggle_mute)
-        self.check_for_updates()
+        self.check_for_updates()  # Check updates on startup
         self.audio_thread = AudioStreamThread(self)
         self.audio_thread.start()
-    def setup_logging(self, enable_logging: bool):
-        setup_logging(enable_logging)
     def resource_path(self, relative_path: str) -> str:
         try:
             base_path = sys._MEIPASS
@@ -489,7 +521,7 @@ class MicMaster(QWidget):
         self.settings_btn.setToolTip("Open settings.")
         layout.addWidget(self.settings_btn)
         self.check_updates_btn = QPushButton("Check for Updates", self)
-        self.check_updates_btn.clicked.connect(self.check_for_updates)
+        self.check_updates_btn.clicked.connect(lambda: check_for_updates_notify(self))
         self.check_updates_btn.setToolTip("Check for updates.")
         layout.addWidget(self.check_updates_btn)
         self.update_status_label = QLabel("")
@@ -505,9 +537,15 @@ class MicMaster(QWidget):
         self.audio_level_visual.setMaximum(100)
         self.audio_level_visual.setValue(0)
         layout.addWidget(self.audio_level_visual)
+        self.version_label = QLabel(f"v{VERSION}", self)
+        font = self.version_label.font()
+        font.setPointSize(8)
+        self.version_label.setFont(font)
+        self.version_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.version_label, alignment=Qt.AlignRight)
         self.setLayout(layout)
         self.setWindowTitle('MicMaster')
-        self.resize(300, 500)
+        self.resize(300, 550)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowMaximizeButtonHint)
     def show_help(self):
         help_text = ("MicMaster Help:\n"
@@ -516,7 +554,8 @@ class MicMaster(QWidget):
                      "- Enable auto-mute for specified applications.\n"
                      "- Real-time audio level display.\n"
                      "- Minimize to tray to run in background.\n"
-                     "- Right-click tray icon for quick actions.")
+                     "- When an update is available, you will be notified with a download link.\n"
+                     f"- Current Version: {VERSION}")
         QMessageBox.information(self, "MicMaster Help", help_text)
     def apply_theme(self, theme_name: str):
         if theme_name == 'Dark':
@@ -592,7 +631,6 @@ class MicMaster(QWidget):
             'auto_mute_apps': [],
             'tray_enabled': False,
             'create_desktop_shortcut': False,
-            'enable_logging': True,
             'hotkey': None
         }
     def get_current_profile(self) -> dict:
@@ -605,7 +643,6 @@ class MicMaster(QWidget):
             self.use_sound_notification = profile.get('sound_notifications', False)
             self.notifications_enabled = profile.get('notifications', False)
             self.tray_enabled = profile.get('tray_enabled', False)
-            self.enable_logging = profile.get('enable_logging', True)
             self.enable_auto_mute = profile.get('enable_auto_mute', False)
             self.auto_mute_apps = profile.get('auto_mute_apps', [])
             self.hotkey = profile.get('hotkey', None)
@@ -848,83 +885,9 @@ class MicMaster(QWidget):
         self.audio_level_visual.setValue(level)
         self.audio_level_label.setText(f"Audio Level: {level}%")
     def check_for_updates(self):
-        try:
-            self.update_status_label.setText("Checking for updates...")
-            self.update_status_label.repaint()
+        if hasattr(self, 'check_updates_btn') and self.check_updates_btn is not None:
             self.check_updates_btn.setEnabled(False)
-            owner = "balki97"
-            repo = "MicMaster"
-            api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-            response = requests.get(api_url, timeout=10)
-            if response.status_code == 404:
-                self.update_status_label.setText("No releases found. Create a release on GitHub.")
-                QMessageBox.information(self, "No Releases", "No releases found. Create a release on GitHub for updates.")
-                return
-            response.raise_for_status()
-            latest_release = response.json()
-            assets = latest_release.get('assets', [])
-            download_url = assets[0].get('browser_download_url', '') if assets else ''
-            latest_version = latest_release.get('tag_name', '').lstrip('v')
-            if not latest_version:
-                logging.warning("Latest version not found.")
-                self.update_status_label.setText("Failed to retrieve version.")
-                QMessageBox.warning(self, "Update Check", "Failed to retrieve version info.")
-                return
-            if self.is_newer_version(latest_version, VERSION):
-                reply = QMessageBox.question(self, "Update Available",
-                                             f"New version {latest_version} available. You have {VERSION}.\nDownload?",
-                                             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-                if reply == QMessageBox.Yes and download_url:
-                    self.download_update(download_url)
-                self.update_status_label.setText("Update available.")
-            else:
-                self.update_status_label.setText("You are using the latest version.")
-                logging.info("Latest version in use.")
-        except requests.RequestException as e:
-            logging.error(f"Error checking updates: {e}")
-            self.update_status_label.setText("Error checking updates.")
-            QMessageBox.warning(self, "Update Check Failed", "Failed to check updates.")
-        except Exception as e:
-            logging.error(f"Unexpected error: {e}")
-            self.update_status_label.setText("Error checking updates.")
-            QMessageBox.warning(self, "Update Check Failed", "Failed to check updates.")
-        finally:
-            self.check_updates_btn.setEnabled(True)
-    def download_update(self, url: str):
-        try:
-            QMessageBox.information(self, "Update", "The update will be downloaded. "
-                                                      "After closing the application, the update will be applied automatically.")
-            current_dir = os.path.dirname(sys.executable)
-            temp_exe_path = os.path.join(current_dir, TEMP_NEW_EXE)
-            if os.path.exists(temp_exe_path):
-                os.remove(temp_exe_path)
-                logging.info("Old temporary update file deleted.")
-            response = requests.get(url, stream=True)
-            total_length = response.headers.get('content-length')
-            with open(temp_exe_path, 'wb') as f:
-                if total_length is None:
-                    f.write(response.content)
-                else:
-                    dl = 0
-                    total_length = int(total_length)
-                    for data in response.iter_content(chunk_size=4096):
-                        dl += len(data)
-                        f.write(data)
-            # Spawn updater that will replace the current exe after the app exits.
-            perform_update(temp_exe_path, sys.executable)
-            # Exit the current application so that the updater can replace the file.
-            self.close()
-        except Exception as e:
-            logging.error(f"Error downloading update: {e}")
-            QMessageBox.critical(self, "Download Failed", "Failed to download update.")
-    def is_newer_version(self, latest: str, current: str) -> bool:
-        def version_tuple(v):
-            return tuple(map(int, v.split(".")))
-        try:
-            return version_tuple(latest) > version_tuple(current)
-        except ValueError:
-            logging.error(f"Invalid version format. Latest: {latest}, Current: {current}")
-            return False
+        check_for_updates_notify(self)
     def create_desktop_shortcut_method(self):
         try:
             exe_path = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(sys.argv[0])
@@ -968,7 +931,7 @@ class MicMaster(QWidget):
     def load_current_profile(self):
         try:
             self.apply_profile_settings()
-            self.setup_logging(self.enable_logging)
+            setup_logging(self.settings.get('enable_logging', True))
             self.setup_auto_mute()
             self.load_hotkey()
         except Exception as e:
@@ -979,12 +942,16 @@ class MicMaster(QWidget):
             self.apply_profile_settings()
     def get_profiles(self) -> list:
         return self.profiles
-    def setup_auto_mute(self):
-        profile = self.get_current_profile()
-        self.enable_auto_mute = profile.get('enable_auto_mute', False)
-        self.auto_mute_apps = profile.get('auto_mute_apps', [])
-    def toggle_voice_activation(self, state):
-        pass
+    def closeEvent(self, event):
+        self.audio_thread.stop()
+        self.audio_thread.join()
+        event.accept()
+    def quit_app(self):
+        if self.tray_icon:
+            self.tray_icon.hide()
+        self.audio_thread.stop()
+        self.audio_thread.join()
+        QApplication.quit()
 
 class MicMasterApp:
     def __init__(self):
@@ -1009,11 +976,6 @@ class MicMasterApp:
 
 def main():
     pythoncom.CoInitialize()
-    if len(sys.argv) == 3 and sys.argv[1] == "--update":
-        temp_exe_path = sys.argv[2]
-        current_exe_path = sys.executable
-        perform_update(temp_exe_path, current_exe_path)
-        return
     app_instance = MicMasterApp()
     app_instance.run()
 
